@@ -1,6 +1,12 @@
 # Zoom Clone — Video Conferencing Platform
 
+> 🟢 **Live Demo:** https://video-meet-theta.vercel.app
+> 🔌 **API:** https://video-meet-api.onrender.com · **Docs:** https://video-meet-api.onrender.com/docs
+> 💾 **Repo:** https://github.com/asinadarsh/video-meet
+
 A production-ready Zoom-style web conferencing app built with **Next.js 15** (frontend), **FastAPI** (backend), **WebRTC** (mesh peer-to-peer media), **WebSockets** (real-time signaling + chat), and **SQLite** (persistence). Designed so chat & signaling can scale horizontally by swapping the in-memory broker for **Redis Pub/Sub**.
+
+> _Note: the API runs on Render's free tier and sleeps after 15 min of inactivity — the first request after idle may take 30–60 s to cold-start, after which everything responds instantly._
 
 ## Highlights
 
