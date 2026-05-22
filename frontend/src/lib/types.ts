@@ -6,6 +6,8 @@ export type Meeting = {
   scheduled_for: string | null;
   duration_minutes: number;
   status: "scheduled" | "active" | "ended";
+  lobby_enabled?: boolean;
+  locked?: boolean;
   started_at: string | null;
   ended_at: string | null;
   created_at: string;
@@ -27,6 +29,7 @@ export type JoinResponse = {
   meeting: Meeting;
   participant_id: string;
   is_host: boolean;
+  status?: "admitted" | "waiting";
   participants: Participant[];
 };
 

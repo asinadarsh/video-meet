@@ -33,6 +33,8 @@ def _to_out(m, request: Request, count: int = 0) -> MeetingOut:
         scheduled_for=m.scheduled_for,
         duration_minutes=m.duration_minutes,
         status=m.status,
+        lobby_enabled=bool(getattr(m, "lobby_enabled", False)),
+        locked=bool(getattr(m, "locked", False)),
         started_at=m.started_at,
         ended_at=m.ended_at,
         created_at=m.created_at,
@@ -85,7 +87,8 @@ def join(
     meeting = svc.get_meeting(db, meeting_id)
     if not meeting:
         raise HTTPException(status_code=404, detail="Meeting not found")
-    ok, reason = svc.is_meeting_joinable(meeting)
+    is_host_request = bool(payload.host_token) and payload.host_token == meeting.host_token
+    ok, reason = svc.is_meeting_joinable(meeting, is_host=is_host_request)
     if not ok:
         raise HTTPException(status_code=403, detail=reason)
 
@@ -95,6 +98,7 @@ def join(
         meeting=_to_out(meeting, request, len(actives)),
         participant_id=participant.participant_id,
         is_host=participant.is_host,
+        status=participant.status,
         participants=[ParticipantOut.model_validate(p) for p in actives],
     )
 

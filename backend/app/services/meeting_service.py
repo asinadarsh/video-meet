@@ -87,31 +87,90 @@ def recent_meetings(db: Session, limit: int = 20) -> List[Meeting]:
 
 def participant_count(db: Session, meeting_id: str) -> int:
     return db.scalar(
-        select(func.count(Participant.id))
-        .where(Participant.meeting_id == meeting_id, Participant.left_at.is_(None))
+        select(func.count(Participant.id)).where(
+            Participant.meeting_id == meeting_id,
+            Participant.left_at.is_(None),
+            Participant.status == "admitted",
+        )
     ) or 0
 
 
 def list_active_participants(db: Session, meeting_id: str) -> List[Participant]:
+    """Admitted participants who haven't left."""
     stmt = (
         select(Participant)
-        .where(Participant.meeting_id == meeting_id, Participant.left_at.is_(None))
+        .where(
+            Participant.meeting_id == meeting_id,
+            Participant.left_at.is_(None),
+            Participant.status == "admitted",
+        )
         .order_by(Participant.joined_at.asc())
     )
     return list(db.scalars(stmt))
 
 
-def is_meeting_joinable(meeting: Meeting) -> Tuple[bool, str]:
-    """Return (ok, reason)."""
+def list_waiting_participants(db: Session, meeting_id: str) -> List[Participant]:
+    stmt = (
+        select(Participant)
+        .where(
+            Participant.meeting_id == meeting_id,
+            Participant.left_at.is_(None),
+            Participant.status == "waiting",
+        )
+        .order_by(Participant.joined_at.asc())
+    )
+    return list(db.scalars(stmt))
+
+
+def get_participant(db: Session, participant_id: str) -> Optional[Participant]:
+    return db.scalar(select(Participant).where(Participant.participant_id == participant_id))
+
+
+def admit_participant(db: Session, participant_id: str) -> Optional[Participant]:
+    p = get_participant(db, participant_id)
+    if p and p.status == "waiting":
+        p.status = "admitted"
+        db.commit()
+        db.refresh(p)
+    return p
+
+
+def deny_participant(db: Session, participant_id: str) -> Optional[Participant]:
+    p = get_participant(db, participant_id)
+    if p:
+        p.status = "denied"
+        p.left_at = datetime.now(timezone.utc)
+        db.commit()
+        db.refresh(p)
+    return p
+
+
+def set_lobby(db: Session, meeting: Meeting, enabled: bool) -> Meeting:
+    meeting.lobby_enabled = enabled
+    db.commit()
+    db.refresh(meeting)
+    return meeting
+
+
+def set_locked(db: Session, meeting: Meeting, locked: bool) -> Meeting:
+    meeting.locked = locked
+    db.commit()
+    db.refresh(meeting)
+    return meeting
+
+
+def is_meeting_joinable(meeting: Meeting, is_host: bool = False) -> Tuple[bool, str]:
+    """Return (ok, reason). Hosts can always join their own meetings."""
     if meeting.status == "ended":
         return False, "This meeting has ended."
+    if meeting.locked and not is_host:
+        return False, "This meeting is locked by the host."
     if meeting.status == "scheduled" and meeting.scheduled_for:
-        # allow joining up to 10 min before scheduled start
         now = datetime.now(timezone.utc)
         scheduled = meeting.scheduled_for
         if scheduled.tzinfo is None:
             scheduled = scheduled.replace(tzinfo=timezone.utc)
-        if now < scheduled - timedelta(minutes=10):
+        if now < scheduled - timedelta(minutes=10) and not is_host:
             return False, "This meeting hasn't started yet."
     return True, ""
 
@@ -128,11 +187,17 @@ def join_meeting(
         meeting.started_at = now
         db.add(MeetingSession(meeting_id=meeting.meeting_id, started_at=now))
 
+    # Lobby gating: non-host joiners wait when lobby is enabled.
+    status = "admitted"
+    if meeting.lobby_enabled and not is_host:
+        status = "waiting"
+
     participant = Participant(
         participant_id=generate_token(16),
         meeting_id=meeting.meeting_id,
         name=name.strip(),
         is_host=is_host,
+        status=status,
     )
     db.add(participant)
     db.commit()

@@ -15,6 +15,9 @@ class Participant(Base):
     name = Column(String(120), nullable=False)
     is_host = Column(Boolean, nullable=False, default=False)
 
+    # admitted | waiting | denied
+    status = Column(String(20), nullable=False, default="admitted", index=True)
+
     joined_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     left_at = Column(DateTime(timezone=True), nullable=True)
 

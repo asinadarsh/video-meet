@@ -1,13 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { Copy, Info, LayoutGrid, User } from "lucide-react";
+import { Copy, Info, LayoutGrid, User, Lock, DoorClosed } from "lucide-react";
 import { api } from "@/lib/api";
 import { storage } from "@/lib/storage";
 import type { ChatMessage, JoinResponse, Meeting, Participant } from "@/lib/types";
 
 import { PreJoin } from "@/components/meeting/PreJoin";
+import { Lobby } from "@/components/meeting/Lobby";
+import { LobbyPanel, type LobbyEntry } from "@/components/meeting/LobbyPanel";
+import { CaptionsOverlay, type CaptionLine } from "@/components/meeting/CaptionsOverlay";
 import { VideoGrid, type TileData, type ViewMode } from "@/components/meeting/VideoGrid";
 import { Controls } from "@/components/meeting/Controls";
 import { ChatPanel } from "@/components/meeting/ChatPanel";
@@ -17,8 +20,12 @@ import {
 } from "@/components/meeting/ParticipantsPanel";
 import { useSocket } from "@/hooks/useSocket";
 import { useWebRTC, type RemotePeer } from "@/hooks/useWebRTC";
+import { useRecorder } from "@/hooks/useRecorder";
+import { useActiveSpeaker } from "@/hooks/useActiveSpeaker";
+import { useConnectionQuality } from "@/hooks/useConnectionQuality";
+import { useCaptions } from "@/hooks/useCaptions";
 
-type Stage = "loading" | "prejoin" | "joining" | "in-meeting" | "left" | "error";
+type Stage = "loading" | "prejoin" | "joining" | "waiting" | "in-meeting" | "left" | "error";
 
 export default function MeetingRoomPage() {
   const params = useParams<{ id: string }>();
@@ -51,34 +58,78 @@ export default function MeetingRoomPage() {
   const [pinnedId, setPinnedId] = useState<string | null>(null);
   const [userOverrodeView, setUserOverrodeView] = useState(false);
 
+  // bonus features
+  const [lobbyEnabled, setLobbyEnabled] = useState(false);
+  const [locked, setLocked] = useState(false);
+  const [lobbyEntries, setLobbyEntries] = useState<LobbyEntry[]>([]);
+  const [levels, setLevels] = useState<Map<string, number>>(new Map());
+  const [captionsOn, setCaptionsOn] = useState(false);
+  const [captionLines, setCaptionLines] = useState<CaptionLine[]>([]);
+  const captionSeqRef = useRef(0);
+
   const selfId = joinInfo?.participant_id ?? null;
   const isHost = !!joinInfo?.is_host;
 
-  // sendSignal stable wrapper (closed over by useWebRTC)
-  const sendRef = useRef<(msg: any) => void>(() => {});
-  const sendSignal = useCallback((target: string, payload: any) => {
+  // sendSignal stable wrapper
+  type Outgoing = Record<string, unknown>;
+  const sendRef = useRef<(msg: Outgoing) => void>(() => {});
+  const sendSignal = useCallback((target: string, payload: unknown) => {
     sendRef.current({ type: "signal", target, payload });
   }, []);
 
   const rtc = useWebRTC({ selfId, localStream, sendSignal });
 
+  // refs to dodge stale closures
+  const participantsRef = useRef<Participant[]>([]);
+  participantsRef.current = participants;
+  const chatOpenRef = useRef(false);
+  chatOpenRef.current = chatOpen;
+  const toggleAudioRef = useRef<(force?: boolean) => void>(() => {});
+
   // ---- handle incoming socket messages ----
   const onSocketMessage = useCallback(
-    (msg: any) => {
+    (msg: Record<string, unknown>) => {
       if (!msg || !msg.type) return;
-      switch (msg.type) {
+      switch (msg.type as string) {
         case "init": {
           const others = (msg.participants as Participant[]).filter(
-            (p) => p.participant_id !== msg.self_id,
+            (p) => p.participant_id !== (msg.self_id as string),
           );
           setParticipants((cur) => {
             const known = new Set(cur.map((p) => p.participant_id));
             return [...cur, ...others.filter((p) => !known.has(p.participant_id))];
           });
-          // we joined last → we initiate offers to everyone already here
-          for (const p of others) {
-            rtc.initiateOffer(p.participant_id, p.name);
+          if (typeof msg.lobby_enabled === "boolean") setLobbyEnabled(msg.lobby_enabled);
+          if (typeof msg.locked === "boolean") setLocked(msg.locked);
+          if (Array.isArray(msg.waiting)) {
+            setLobbyEntries(msg.waiting as LobbyEntry[]);
           }
+          if (!msg.in_lobby) {
+            for (const p of others) {
+              rtc.initiateOffer(p.participant_id, p.name);
+            }
+          }
+          break;
+        }
+        case "admitted": {
+          setStage("in-meeting");
+          break;
+        }
+        case "lobby-knock": {
+          const p = msg.participant as LobbyEntry;
+          setLobbyEntries((cur) =>
+            cur.some((x) => x.participant_id === p.participant_id) ? cur : [...cur, p],
+          );
+          break;
+        }
+        case "lobby-leave": {
+          const id = msg.participant_id as string;
+          setLobbyEntries((cur) => cur.filter((x) => x.participant_id !== id));
+          break;
+        }
+        case "meeting-state": {
+          if (typeof msg.lobby_enabled === "boolean") setLobbyEnabled(msg.lobby_enabled);
+          if (typeof msg.locked === "boolean") setLocked(msg.locked);
           break;
         }
         case "participant-joined": {
@@ -87,7 +138,6 @@ export default function MeetingRoomPage() {
           setParticipants((cur) =>
             cur.some((x) => x.participant_id === p.participant_id) ? cur : [...cur, p],
           );
-          // they will offer to us; we just wait.
           break;
         }
         case "participant-left": {
@@ -99,18 +149,22 @@ export default function MeetingRoomPage() {
             next.delete(id);
             return next;
           });
+          setLevels((cur) => {
+            const next = new Map(cur);
+            next.delete(id);
+            return next;
+          });
           break;
         }
         case "signal": {
           const from = msg.from as string;
           const fromName =
-            participantsRef.current.find((p) => p.participant_id === from)?.name ||
-            "Peer";
-          rtc.handleSignal(from, fromName, msg.payload);
+            participantsRef.current.find((p) => p.participant_id === from)?.name || "Peer";
+          rtc.handleSignal(from, fromName, msg.payload as never);
           break;
         }
         case "state": {
-          rtc.updatePeer(msg.from, {
+          rtc.updatePeer(msg.from as string, {
             audio: !!msg.audio,
             video: !!msg.video,
             screen: !!msg.screen,
@@ -118,12 +172,12 @@ export default function MeetingRoomPage() {
           break;
         }
         case "raise-hand": {
-          rtc.updatePeer(msg.from, { raisedHand: !!msg.value });
+          rtc.updatePeer(msg.from as string, { raisedHand: !!msg.value });
           break;
         }
         case "reaction": {
           const id = Date.now() + Math.random();
-          setFloating((cur) => [...cur, { id, from: msg.from, emoji: msg.emoji }]);
+          setFloating((cur) => [...cur, { id, from: msg.from as string, emoji: msg.emoji as string }]);
           setTimeout(() => setFloating((cur) => cur.filter((f) => f.id !== id)), 3000);
           break;
         }
@@ -147,6 +201,28 @@ export default function MeetingRoomPage() {
           }
           break;
         }
+        case "level": {
+          const id = msg.from as string;
+          const value = typeof msg.value === "number" ? msg.value : 0;
+          setLevels((cur) => {
+            const next = new Map(cur);
+            if (value <= 0.05) next.delete(id);
+            else next.set(id, value);
+            return next;
+          });
+          break;
+        }
+        case "caption": {
+          const line: CaptionLine = {
+            id: ++captionSeqRef.current,
+            from: msg.from as string,
+            name: (msg.name as string) || "Someone",
+            text: (msg.text as string) || "",
+            ts: Date.now(),
+          };
+          setCaptionLines((cur) => [...cur, line].slice(-12));
+          break;
+        }
         case "force-mute": {
           if (!msg.target || msg.target === selfId) {
             toggleAudioRef.current(false);
@@ -163,22 +239,17 @@ export default function MeetingRoomPage() {
     [rtc, selfId],
   );
 
-  // refs to dodge stale closures
-  const participantsRef = useRef<Participant[]>([]);
-  participantsRef.current = participants;
-  const chatOpenRef = useRef(false);
-  chatOpenRef.current = chatOpen;
-  const toggleAudioRef = useRef<(force?: boolean) => void>(() => {});
-
   // ---- socket ----
+  // Connect during both waiting and in-meeting (we need it to receive 'admitted')
+  const socketActive = stage === "in-meeting" || stage === "waiting";
   const { state: socketState, send } = useSocket(
-    stage === "in-meeting" ? meetingId : null,
+    socketActive ? meetingId : null,
     selfId,
     onSocketMessage,
   );
   sendRef.current = send;
 
-  // ---- fetch meeting on mount ----
+  // ---- fetch meeting ----
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -186,18 +257,19 @@ export default function MeetingRoomPage() {
         const m = await api.get(meetingId);
         if (!alive) return;
         setMeeting(m);
+        setLobbyEnabled(!!m.lobby_enabled);
+        setLocked(!!m.locked);
         setStage("prejoin");
-      } catch (e: any) {
-        setErrorMsg(e?.message?.includes("404") ? "Meeting not found" : e?.message);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "Failed to load meeting";
+        setErrorMsg(msg.includes("404") ? "Meeting not found" : msg);
         setStage("error");
       }
     })();
-    return () => {
-      alive = false;
-    };
+    return () => { alive = false; };
   }, [meetingId]);
 
-  // ---- join after pre-join submit ----
+  // ---- join ----
   const handlePreJoinSubmit = async ({
     name, audio, video,
   }: { name: string; audio: boolean; video: boolean }) => {
@@ -208,6 +280,8 @@ export default function MeetingRoomPage() {
       storage.setName(name);
       setJoinInfo(j);
       setMeeting(j.meeting);
+      setLobbyEnabled(!!j.meeting.lobby_enabled);
+      setLocked(!!j.meeting.locked);
       setParticipants(j.participants.filter((p) => p.participant_id !== j.participant_id));
       setAudioOn(audio);
       setVideoOn(video);
@@ -233,14 +307,18 @@ export default function MeetingRoomPage() {
         setMessages(history);
       } catch {}
 
-      setStage("in-meeting");
-    } catch (e: any) {
-      setErrorMsg(e?.message || "Could not join meeting");
+      // If lobby is on and we're not host, we land in the waiting room.
+      // The socket connects, the server sends in_lobby:true via 'init',
+      // and we wait for the 'admitted' message.
+      setStage(j.status === "waiting" ? "waiting" : "in-meeting");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Could not join meeting";
+      setErrorMsg(msg);
       setStage("error");
     }
   };
 
-  // ---- broadcast local audio/video state ----
+  // ---- broadcast local state ----
   useEffect(() => {
     if (stage !== "in-meeting") return;
     sendRef.current({ type: "state", audio: audioOn, video: videoOn, screen: screenOn });
@@ -267,7 +345,6 @@ export default function MeetingRoomPage() {
   const toggleScreenShare = useCallback(async () => {
     if (!localStream) return;
     if (screenOn) {
-      // stop screen share, restore camera
       screenTrackRef.current?.stop();
       const cam = originalCamTrackRef.current;
       if (cam) {
@@ -280,13 +357,9 @@ export default function MeetingRoomPage() {
       setScreenOn(false);
     } else {
       try {
-        const ds = await (navigator.mediaDevices as any).getDisplayMedia({ video: true, audio: false });
+        const ds = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
         const track: MediaStreamTrack = ds.getVideoTracks()[0];
-        track.onended = () => {
-          // user clicked browser stop → revert
-          toggleScreenShare();
-        };
-        // swap with the cam track
+        track.onended = () => { toggleScreenShare(); };
         const camTrack = localStream.getVideoTracks()[0];
         originalCamTrackRef.current = camTrack;
         if (camTrack) localStream.removeTrack(camTrack);
@@ -324,9 +397,65 @@ export default function MeetingRoomPage() {
     sendRef.current({ type: "host-action", action: "remove", target: id });
   }, []);
 
-  const leave = useCallback(() => {
-    setStage("left");
+  const admitParticipant = useCallback((id: string) => {
+    sendRef.current({ type: "host-action", action: "admit", target: id });
   }, []);
+  const denyParticipant = useCallback((id: string) => {
+    sendRef.current({ type: "host-action", action: "deny", target: id });
+  }, []);
+  const admitAll = useCallback(() => {
+    lobbyEntries.forEach((e) => admitParticipant(e.participant_id));
+  }, [lobbyEntries, admitParticipant]);
+
+  const toggleLobby = useCallback(() => {
+    sendRef.current({ type: "host-action", action: lobbyEnabled ? "disable-lobby" : "enable-lobby" });
+  }, [lobbyEnabled]);
+  const toggleLock = useCallback(() => {
+    sendRef.current({ type: "host-action", action: locked ? "unlock" : "lock" });
+  }, [locked]);
+  const endMeetingForAll = useCallback(() => {
+    if (!confirm("End the meeting for everyone?")) return;
+    sendRef.current({ type: "host-action", action: "end" });
+  }, []);
+
+  const leave = useCallback(() => { setStage("left"); }, []);
+
+  // ---- recorder ----
+  const recorderFilename = useMemo(
+    () => `meeting-${meetingId}`,
+    [meetingId],
+  );
+  const recorder = useRecorder(localStream, recorderFilename);
+  const onToggleRecord = useCallback(() => {
+    if (recorder.state === "recording") recorder.stop();
+    else recorder.start();
+  }, [recorder]);
+
+  // ---- captions (own mic) ----
+  const sendCaption = useCallback((text: string, final: boolean) => {
+    sendRef.current({ type: "caption", text, final });
+  }, []);
+  const captions = useCaptions({
+    enabled: captionsOn,
+    audioEnabled: audioOn,
+    onText: (text, final) => { if (final) sendCaption(text, true); },
+  });
+
+  // ---- active speaker (broadcast own mic level) ----
+  useActiveSpeaker(localStream, audioOn, (value) => {
+    sendRef.current({ type: "level", value });
+    if (selfId) {
+      setLevels((cur) => {
+        const next = new Map(cur);
+        if (value <= 0.05) next.delete(selfId);
+        else next.set(selfId, value);
+        return next;
+      });
+    }
+  });
+
+  // ---- connection quality ----
+  const qualities = useConnectionQuality(rtc.peerConnections.current);
 
   // ---- cleanup ----
   useEffect(() => {
@@ -347,7 +476,7 @@ export default function MeetingRoomPage() {
     try { await navigator.clipboard.writeText(url); } catch {}
   };
 
-  // ---- render ----
+  // ---- render gates ----
   if (stage === "loading") {
     return <div className="min-h-screen grid place-items-center text-[var(--muted)]">Loading meeting…</div>;
   }
@@ -386,11 +515,29 @@ export default function MeetingRoomPage() {
       />
     );
   }
+  if (stage === "waiting") {
+    return (
+      <Lobby
+        meetingTitle={meeting?.title || "Meeting"}
+        onCancel={() => setStage("left")}
+      />
+    );
+  }
 
-  // in-meeting
+  // ---- in-meeting ----
   const peersArr: RemotePeer[] = Array.from(rtc.peers.values());
-
   const selfName = storage.getName() || "You";
+
+  // Active speaker: highest level above a threshold; ignore screen sharer
+  // (they're already on stage).
+  let activeSpeakerId: string | null = null;
+  let bestLevel = 0.08;
+  for (const [id, lvl] of levels) {
+    if (lvl > bestLevel) {
+      bestLevel = lvl;
+      activeSpeakerId = id;
+    }
+  }
 
   const tiles: TileData[] = [
     {
@@ -403,6 +550,9 @@ export default function MeetingRoomPage() {
       raisedHand: handRaised,
       isSelf: true,
       isHost,
+      speaking: activeSpeakerId === selfId,
+      // We don't measure our own connection quality from the other side;
+      // leave unset.
     },
     ...peersArr.map<TileData>((p) => ({
       id: p.participant_id,
@@ -413,6 +563,8 @@ export default function MeetingRoomPage() {
       screen: p.screen,
       raisedHand: p.raisedHand,
       isHost: participants.find((x) => x.participant_id === p.participant_id)?.is_host || false,
+      quality: qualities.get(p.participant_id),
+      speaking: activeSpeakerId === p.participant_id,
     })),
   ];
 
@@ -427,12 +579,13 @@ export default function MeetingRoomPage() {
     raisedHand: t.raisedHand,
   }));
 
-  // Spotlight resolution: explicit pin → whoever is screen-sharing → first peer
   const screenSharer = tiles.find((t) => t.screen);
-  const spotlightId = pinnedId ?? screenSharer?.id ?? null;
+  // Spotlight order: pin → screen share → active speaker
+  const spotlightId =
+    pinnedId ??
+    screenSharer?.id ??
+    (activeSpeakerId && activeSpeakerId !== selfId ? activeSpeakerId : null);
 
-  // Auto-switch to speaker view when someone starts screen-sharing
-  // (unless the user has manually picked a view)
   const effectiveMode: ViewMode =
     userOverrodeView ? viewMode : screenSharer ? "speaker" : viewMode;
 
@@ -449,7 +602,11 @@ export default function MeetingRoomPage() {
         <div className="flex items-center gap-3 min-w-0">
           <Info className="size-4 text-[var(--muted)]" />
           <div className="min-w-0">
-            <div className="text-sm font-semibold truncate">{meeting?.title || "Meeting"}</div>
+            <div className="text-sm font-semibold truncate flex items-center gap-2">
+              {meeting?.title || "Meeting"}
+              {locked && <Lock className="size-3.5 text-amber-400" />}
+              {lobbyEnabled && <DoorClosed className="size-3.5 text-amber-400" />}
+            </div>
             <div className="text-xs text-[var(--muted)] font-mono">{meetingId}</div>
           </div>
         </div>
@@ -466,7 +623,6 @@ export default function MeetingRoomPage() {
             {socketState === "open" ? "Connected" : socketState}
           </span>
 
-          {/* Layout toggle */}
           <div className="hidden sm:flex items-center bg-[var(--surface-2)] border border-[var(--border)] rounded-md p-0.5">
             <button
               onClick={() => { setViewMode("gallery"); setUserOverrodeView(true); }}
@@ -497,6 +653,15 @@ export default function MeetingRoomPage() {
         </div>
       </header>
 
+      {isHost && lobbyEntries.length > 0 && (
+        <LobbyPanel
+          entries={lobbyEntries}
+          onAdmit={admitParticipant}
+          onDeny={denyParticipant}
+          onAdmitAll={admitAll}
+        />
+      )}
+
       <div className="flex-1 flex overflow-hidden">
         <main className="flex-1 p-3 sm:p-4 overflow-hidden relative">
           <VideoGrid
@@ -507,7 +672,8 @@ export default function MeetingRoomPage() {
             onTogglePin={togglePin}
           />
 
-          {/* floating reactions */}
+          {captionsOn && <CaptionsOverlay lines={captionLines} />}
+
           <div className="pointer-events-none absolute inset-0 overflow-hidden">
             {floating.map((f) => (
               <div
@@ -558,6 +724,12 @@ export default function MeetingRoomPage() {
         isHost={isHost}
         unread={chatOpen ? 0 : unread}
         participantCount={rows.length}
+        recording={recorder.state === "recording"}
+        recordingDisabled={!localStream}
+        captionsOn={captionsOn}
+        captionsSupported={captions.supported}
+        lobbyEnabled={lobbyEnabled}
+        locked={locked}
         onToggleAudio={() => toggleAudio()}
         onToggleVideo={toggleVideo}
         onToggleScreen={toggleScreenShare}
@@ -577,6 +749,11 @@ export default function MeetingRoomPage() {
         onReact={onReact}
         onMuteAll={onMuteAll}
         onLeave={leave}
+        onToggleRecord={onToggleRecord}
+        onToggleCaptions={() => setCaptionsOn((v) => !v)}
+        onToggleLobby={toggleLobby}
+        onToggleLock={toggleLock}
+        onEndMeeting={endMeetingForAll}
       />
 
       <style jsx global>{`

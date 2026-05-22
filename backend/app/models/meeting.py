@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import Column, DateTime, Integer, String, Text
+from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text
 from sqlalchemy.orm import relationship
 
 from app.database import Base
@@ -21,6 +21,10 @@ class Meeting(Base):
 
     # scheduled | active | ended
     status = Column(String(20), nullable=False, default="scheduled", index=True)
+
+    # Host-controlled gates
+    lobby_enabled = Column(Boolean, nullable=False, default=False)
+    locked = Column(Boolean, nullable=False, default=False)
 
     started_at = Column(DateTime(timezone=True), nullable=True)
     ended_at = Column(DateTime(timezone=True), nullable=True)

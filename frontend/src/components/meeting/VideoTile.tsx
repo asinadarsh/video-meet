@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { Mic, MicOff, MonitorUp, Hand, Pin, PinOff } from "lucide-react";
+import { Mic, MicOff, MonitorUp, Hand, Pin, PinOff, Signal, SignalHigh, SignalLow, SignalMedium } from "lucide-react";
 import { avatarColor, initials, cn } from "@/lib/utils";
+import type { Quality } from "@/hooks/useConnectionQuality";
 
 type Size = "xs" | "sm" | "md" | "lg";
 
@@ -26,6 +27,8 @@ export function VideoTile({
   size = "md",
   onTogglePin,
   compact,
+  quality,
+  speaking,
 }: {
   stream: MediaStream | null;
   name: string;
@@ -39,6 +42,8 @@ export function VideoTile({
   size?: Size;
   onTogglePin?: () => void;
   compact?: boolean;
+  quality?: Quality;
+  speaking?: boolean;
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
@@ -71,8 +76,9 @@ export function VideoTile({
   return (
     <div
       className={cn(
-        "relative w-full h-full rounded-xl overflow-hidden bg-[var(--surface-2)] border group",
+        "relative w-full h-full rounded-xl overflow-hidden bg-[var(--surface-2)] border group transition-shadow",
         pinned ? "border-[var(--primary)] border-2" : "border-[var(--border)]",
+        speaking ? "ring-2 ring-green-400/80 ring-offset-2 ring-offset-[var(--background)]" : "",
       )}
     >
       <video
@@ -103,8 +109,29 @@ export function VideoTile({
         </div>
       )}
 
-      {/* Top-right indicators */}
-      <div className="absolute top-2 right-2 flex items-center gap-1">
+      {/* Connection quality dot */}
+      {quality && quality !== "unknown" && (
+        <div
+          className={cn(
+            "absolute top-2 right-2 z-10 inline-flex items-center justify-center size-6 rounded-md bg-black/50 backdrop-blur-sm",
+            "translate-x-0",
+            // when other indicators are present they shift down (handled below)
+          )}
+          title={`Connection: ${quality}`}
+        >
+          {quality === "good" && <SignalHigh className="size-3.5 text-green-400" />}
+          {quality === "fair" && <SignalMedium className="size-3.5 text-amber-400" />}
+          {quality === "poor" && <SignalLow className="size-3.5 text-red-400" />}
+        </div>
+      )}
+
+      {/* Top-right indicators (shifted left if quality dot is showing) */}
+      <div
+        className={cn(
+          "absolute top-2 flex items-center gap-1",
+          quality && quality !== "unknown" ? "right-10" : "right-2",
+        )}
+      >
         {!compact && screen && (
           <span className="inline-flex items-center gap-1 bg-black/60 text-white text-[10px] sm:text-xs px-1.5 sm:px-2 py-0.5 sm:py-1 rounded-md">
             <MonitorUp className="size-3" />

@@ -222,6 +222,7 @@ export function useWebRTC({ selfId, localStream, sendSignal }: Args) {
 
   return {
     peers,
+    peerConnections: pcs,
     initiateOffer,
     handleSignal,
     closePeer,

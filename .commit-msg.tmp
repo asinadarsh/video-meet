@@ -1,0 +1,37 @@
+feat: bonus features — recording, captions, active speaker, connection quality, waiting room, lock
+
+Backend
+  - Schema additions: meeting.lobby_enabled, meeting.locked,
+    participant.status (admitted | waiting | denied).
+  - is_meeting_joinable now respects meeting.locked (hosts bypass).
+  - join_meeting puts non-host joiners in 'waiting' when lobby is on.
+  - New service helpers: admit/deny/set_lobby/set_locked, get_participant,
+    list_waiting_participants.
+  - WebSocket protocol additions:
+    * init payload now carries lobby_enabled, locked, in_lobby, waiting[]
+    * new client→server types: level, caption
+    * new host-actions: admit, deny, lock, unlock, enable-lobby,
+      disable-lobby
+    * new server→client types: in-lobby, admitted, lobby-knock,
+      lobby-leave, meeting-state, level, caption
+  - Manager learned a __hosts_only__ delivery flag for lobby events.
+
+Frontend
+  - Adaptive grid + tile already in place; tiles now show a connection
+    quality icon (good/fair/poor) and a green ring on the active speaker.
+  - useRecorder — MediaRecorder wrapper that records the local stream and
+    downloads it as .webm when stopped.
+  - useActiveSpeaker — Web Audio analyser broadcasts a normalized mic
+    level every ~200 ms; peers use it to pick the active speaker.
+  - useConnectionQuality — polls RTCPeerConnection.getStats every 4 s and
+    classifies the inbound link as good/fair/poor based on packet loss
+    and jitter.
+  - useCaptions — Web Speech API wrapper; finalized phrases broadcast
+    over the socket as 'caption' events.
+  - Lobby (pre-join waiting screen) and LobbyPanel (host admit/deny UI)
+    components.
+  - CaptionsOverlay floats the latest 3 lines under the grid.
+  - Controls bar adds CC, Record, and a host menu with mute-all,
+    waiting-room toggle, lock toggle, and end-meeting-for-all.
+  - Active speaker is auto-spotlighted when nothing else is pinned and
+    no one is screen-sharing.

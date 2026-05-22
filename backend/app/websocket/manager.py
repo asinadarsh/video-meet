@@ -75,7 +75,11 @@ class ConnectionManager:
                 await self._safe_send(target, payload)
             return
 
+        # Sender used __hosts_only__ marker → only deliver to host connections.
+        hosts_only = bool(message.pop("__hosts_only__", False)) if isinstance(message, dict) else False
         for c in connections:
+            if hosts_only and not c.is_host:
+                continue
             await self._safe_send(c, message)
 
     async def _safe_send(self, conn: Connection, message: dict) -> None:

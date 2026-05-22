@@ -29,6 +29,7 @@ class ParticipantOut(BaseModel):
     participant_id: str
     name: str
     is_host: bool
+    status: str = "admitted"
     joined_at: datetime
     left_at: Optional[datetime] = None
 
@@ -43,6 +44,8 @@ class MeetingOut(BaseModel):
     scheduled_for: Optional[datetime] = None
     duration_minutes: int
     status: str
+    lobby_enabled: bool = False
+    locked: bool = False
     started_at: Optional[datetime] = None
     ended_at: Optional[datetime] = None
     created_at: datetime
@@ -59,4 +62,5 @@ class JoinResponse(BaseModel):
     meeting: MeetingOut
     participant_id: str
     is_host: bool
+    status: str = "admitted"  # admitted | waiting
     participants: List[ParticipantOut]

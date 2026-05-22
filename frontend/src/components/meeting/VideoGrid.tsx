@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { VideoTile } from "./VideoTile";
+import type { Quality } from "@/hooks/useConnectionQuality";
 
 export type TileData = {
   id: string;
@@ -13,6 +14,8 @@ export type TileData = {
   raisedHand?: boolean;
   isSelf?: boolean;
   isHost?: boolean;
+  quality?: Quality;
+  speaking?: boolean;
 };
 
 export type ViewMode = "gallery" | "speaker";
@@ -129,6 +132,8 @@ function GalleryLayout({
                 isHost={t.isHost}
                 pinned={t.id === pinnedId}
                 size={tileSize}
+                quality={t.quality}
+                speaking={t.speaking}
                 onTogglePin={() => onTogglePin(t.id)}
               />
             </div>
@@ -199,6 +204,8 @@ function SpeakerLayout({
           isHost={featured.isHost}
           pinned={featured.id === pinnedId}
           size="lg"
+          quality={featured.quality}
+          speaking={featured.speaking}
           onTogglePin={() => onTogglePin(featured.id)}
         />
       </div>
@@ -232,6 +239,8 @@ function SpeakerLayout({
                 pinned={t.id === pinnedId}
                 size="sm"
                 compact
+                quality={t.quality}
+                speaking={t.speaking}
                 onTogglePin={() => onTogglePin(t.id)}
               />
             </div>
