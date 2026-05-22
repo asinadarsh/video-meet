@@ -39,6 +39,7 @@ type Props = {
   onToggleLobby: () => void;
   onToggleLock: () => void;
   onEndMeeting: () => void;
+  leaveLabel?: string;
 };
 
 const REACTIONS = ["👍", "👏", "🎉", "❤️", "😂", "😮"];
@@ -116,7 +117,6 @@ export function Controls(p: Props) {
           onMuteAll={p.onMuteAll}
           onToggleLobby={p.onToggleLobby}
           onToggleLock={p.onToggleLock}
-          onEndMeeting={p.onEndMeeting}
         />
       )}
 
@@ -125,7 +125,7 @@ export function Controls(p: Props) {
         className="ml-1 inline-flex items-center gap-2 h-11 px-3 sm:px-5 rounded-full bg-[var(--danger)] hover:bg-red-600 text-white font-medium"
       >
         <PhoneOff className="size-4" />
-        <span className="hidden sm:inline">Leave</span>
+        <span className="hidden sm:inline">{p.leaveLabel || "Leave"}</span>
       </button>
     </div>
   );
@@ -195,14 +195,13 @@ function ReactionMenu({ onReact }: { onReact: (emoji: string) => void }) {
 }
 
 function HostMenu({
-  lobbyEnabled, locked, onMuteAll, onToggleLobby, onToggleLock, onEndMeeting,
+  lobbyEnabled, locked, onMuteAll, onToggleLobby, onToggleLock,
 }: {
   lobbyEnabled: boolean;
   locked: boolean;
   onMuteAll: () => void;
   onToggleLobby: () => void;
   onToggleLock: () => void;
-  onEndMeeting: () => void;
 }) {
   return (
     <div className="relative group flex-shrink-0">
@@ -225,13 +224,6 @@ function HostMenu({
           icon={locked ? <Lock className="size-4 text-amber-400" /> : <Unlock className="size-4" />}
           label={locked ? "Unlock meeting" : "Lock meeting"}
           onClick={onToggleLock}
-        />
-        <div className="my-1 border-t border-[var(--border)]" />
-        <MenuItem
-          icon={<PhoneOff className="size-4 text-red-400" />}
-          label="End meeting for all"
-          onClick={onEndMeeting}
-          danger
         />
       </div>
     </div>

@@ -2,11 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { Copy, Info, LayoutGrid, User, Lock, DoorClosed } from "lucide-react";
+import { Copy, Info, LayoutGrid, User, Lock, DoorClosed, PhoneOff, LogOut } from "lucide-react";
 import { api } from "@/lib/api";
 import { storage } from "@/lib/storage";
 import type { ChatMessage, JoinResponse, Meeting, Participant } from "@/lib/types";
 
+import { Modal } from "@/components/ui/Modal";
+import { Button } from "@/components/ui/Button";
 import { PreJoin } from "@/components/meeting/PreJoin";
 import { Lobby } from "@/components/meeting/Lobby";
 import { LobbyPanel, type LobbyEntry } from "@/components/meeting/LobbyPanel";
@@ -414,11 +416,22 @@ export default function MeetingRoomPage() {
     sendRef.current({ type: "host-action", action: locked ? "unlock" : "lock" });
   }, [locked]);
   const endMeetingForAll = useCallback(() => {
-    if (!confirm("End the meeting for everyone?")) return;
     sendRef.current({ type: "host-action", action: "end" });
+    setLeaveDialogOpen(false);
   }, []);
 
-  const leave = useCallback(() => { setStage("left"); }, []);
+  const [leaveDialogOpen, setLeaveDialogOpen] = useState(false);
+  const onLeaveClick = useCallback(() => {
+    if (isHost) {
+      setLeaveDialogOpen(true);
+    } else {
+      setStage("left");
+    }
+  }, [isHost]);
+  const leaveJustMe = useCallback(() => {
+    setLeaveDialogOpen(false);
+    setStage("left");
+  }, []);
 
   // ---- recorder ----
   const recorderFilename = useMemo(
@@ -748,13 +761,37 @@ export default function MeetingRoomPage() {
         onToggleHand={toggleHand}
         onReact={onReact}
         onMuteAll={onMuteAll}
-        onLeave={leave}
+        onLeave={onLeaveClick}
         onToggleRecord={onToggleRecord}
         onToggleCaptions={() => setCaptionsOn((v) => !v)}
         onToggleLobby={toggleLobby}
         onToggleLock={toggleLock}
         onEndMeeting={endMeetingForAll}
+        leaveLabel={isHost ? "End" : "Leave"}
       />
+
+      <Modal
+        open={leaveDialogOpen}
+        onClose={() => setLeaveDialogOpen(false)}
+        title="End meeting"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-[var(--muted)]">
+            As the host, you can leave the meeting and let others continue, or end the meeting for everyone.
+          </p>
+          <div className="flex flex-col sm:flex-row gap-2 sm:justify-end pt-2">
+            <Button variant="ghost" onClick={() => setLeaveDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button variant="outline" onClick={leaveJustMe}>
+              <LogOut className="size-4" /> Leave meeting
+            </Button>
+            <Button variant="danger" onClick={endMeetingForAll}>
+              <PhoneOff className="size-4" /> End for everyone
+            </Button>
+          </div>
+        </div>
+      </Modal>
 
       <style jsx global>{`
         @keyframes floatUp {
