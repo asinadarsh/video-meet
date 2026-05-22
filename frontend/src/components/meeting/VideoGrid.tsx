@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { VideoTile } from "./VideoTile";
 
 export type TileData = {
@@ -25,9 +25,14 @@ type Props = {
   onTogglePin: (id: string) => void;
 };
 
+const TILE_ASPECT = 16 / 9;
+
 /**
  * Adaptive layout:
- *   - gallery: smart NxM grid sized per participant count + viewport
+ *   - gallery: NxM grid where every tile keeps a 16:9 aspect ratio and
+ *     is sized to be as large as possible in the available space. The
+ *     grid is centered on both axes so 2-person calls don't stretch tiles
+ *     into awkward shapes.
  *   - speaker: one spotlight tile + thumbnail strip (horizontal on
  *     mobile / vertical on desktop)
  */
@@ -78,50 +83,63 @@ function GalleryLayout({
   pinnedId: string | null;
   onTogglePin: (id: string) => void;
 }) {
-  const isMobile = useIsMobile();
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const { width, height } = useContainerSize(containerRef);
+  const isMobile = width > 0 && width < 768;
 
   // Hard cap visible tiles → keep faces large even in big meetings.
-  // The overflow tile shows "+N more"; users can switch to speaker view
-  // or open the participants panel for the full list.
   const CAP = isMobile ? 6 : 16;
   const overflow = tiles.length - CAP;
-  const visible = overflow > 0 ? tiles.slice(0, CAP - 1) : tiles;
+  const visibleTiles = overflow > 0 ? tiles.slice(0, CAP - 1) : tiles;
+  const visibleCount = visibleTiles.length + (overflow > 0 ? 1 : 0);
 
-  const layout = pickGalleryLayout(visible.length + (overflow > 0 ? 1 : 0), isMobile);
-  const tileSize = sizeForCount(visible.length + (overflow > 0 ? 1 : 0));
+  const GAP = 12;
+  const { cols, rows, tileW, tileH } = pickBestLayout(
+    visibleCount,
+    width,
+    height,
+    GAP,
+    isMobile,
+  );
+  const tileSize = sizeForTileWidth(tileW);
 
   return (
-    <div className="h-full w-full grid place-items-center">
-      <div
-        className="grid w-full h-full max-w-[1600px] gap-2 sm:gap-3"
-        style={{
-          gridTemplateColumns: `repeat(${layout.cols}, minmax(0, 1fr))`,
-          gridTemplateRows: `repeat(${layout.rows}, minmax(0, 1fr))`,
-        }}
-      >
-        {visible.map((t) => (
-          <div key={t.id} className="min-h-0 min-w-0">
-            <VideoTile
-              stream={t.stream}
-              name={t.name}
-              audio={t.audio}
-              video={t.video}
-              screen={t.screen}
-              raisedHand={t.raisedHand}
-              isSelf={t.isSelf}
-              isHost={t.isHost}
-              pinned={t.id === pinnedId}
-              size={tileSize}
-              onTogglePin={() => onTogglePin(t.id)}
-            />
-          </div>
-        ))}
-        {overflow > 0 && (
-          <div className="min-h-0 min-w-0">
-            <OverflowTile count={overflow + 1} />
-          </div>
-        )}
-      </div>
+    <div ref={containerRef} className="h-full w-full grid place-items-center">
+      {width > 0 && (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: `repeat(${cols}, ${tileW}px)`,
+            gridTemplateRows: `repeat(${rows}, ${tileH}px)`,
+            gap: `${GAP}px`,
+            justifyContent: "center",
+            alignContent: "center",
+          }}
+        >
+          {visibleTiles.map((t) => (
+            <div key={t.id} className="min-h-0 min-w-0">
+              <VideoTile
+                stream={t.stream}
+                name={t.name}
+                audio={t.audio}
+                video={t.video}
+                screen={t.screen}
+                raisedHand={t.raisedHand}
+                isSelf={t.isSelf}
+                isHost={t.isHost}
+                pinned={t.id === pinnedId}
+                size={tileSize}
+                onTogglePin={() => onTogglePin(t.id)}
+              />
+            </div>
+          ))}
+          {overflow > 0 && (
+            <div className="min-h-0 min-w-0">
+              <OverflowTile count={overflow + 1} />
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -152,20 +170,21 @@ function SpeakerLayout({
   pinnedId: string | null;
   onTogglePin: (id: string) => void;
 }) {
-  // Resolve spotlight: explicit → first non-self → fallback to self.
   const featured =
     tiles.find((t) => t.id === spotlightId) ??
     tiles.find((t) => !t.isSelf) ??
     tiles[0];
   const rest = tiles.filter((t) => t.id !== featured.id);
-  const isMobile = useIsMobile();
+
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const { width } = useContainerSize(containerRef);
+  const isMobile = width > 0 && width < 768;
 
   return (
     <div
+      ref={containerRef}
       className={
-        isMobile
-          ? "h-full flex flex-col gap-2"
-          : "h-full flex gap-3"
+        isMobile ? "h-full flex flex-col gap-2" : "h-full flex gap-3"
       }
     >
       <div className="flex-1 min-w-0 min-h-0">
@@ -224,40 +243,74 @@ function SpeakerLayout({
 }
 
 /* ------------------------------------------------------------------ */
-/* Helpers                                                             */
+/* Layout math                                                         */
 /* ------------------------------------------------------------------ */
 
-function pickGalleryLayout(count: number, isMobile: boolean): { cols: number; rows: number } {
-  if (isMobile) {
-    if (count <= 1) return { cols: 1, rows: 1 };
-    if (count === 2) return { cols: 1, rows: 2 };
-    if (count <= 4) return { cols: 2, rows: 2 };
-    return { cols: 2, rows: 3 }; // capped at 6
+type Layout = { cols: number; rows: number; tileW: number; tileH: number };
+
+/**
+ * Try a small set of (cols, rows) candidates that can hold `count` tiles
+ * and pick the one that yields the largest tile area while keeping every
+ * tile at 16:9.
+ */
+function pickBestLayout(
+  count: number,
+  width: number,
+  height: number,
+  gap: number,
+  isMobile: boolean,
+): Layout {
+  if (count === 0 || width === 0 || height === 0) {
+    return { cols: 1, rows: 1, tileW: 0, tileH: 0 };
   }
-  if (count <= 1) return { cols: 1, rows: 1 };
-  if (count === 2) return { cols: 2, rows: 1 };
-  if (count === 3) return { cols: 3, rows: 1 };
-  if (count === 4) return { cols: 2, rows: 2 };
-  if (count <= 6) return { cols: 3, rows: 2 };
-  if (count <= 9) return { cols: 3, rows: 3 };
-  if (count <= 12) return { cols: 4, rows: 3 };
-  return { cols: 4, rows: 4 }; // capped at 16
+
+  const candidates: Array<{ cols: number; rows: number }> = [];
+  // Generate sensible row/col combos. On mobile prefer narrower grids.
+  const maxCols = isMobile ? 2 : 5;
+  for (let cols = 1; cols <= maxCols; cols++) {
+    const rows = Math.ceil(count / cols);
+    candidates.push({ cols, rows });
+  }
+  // Also a couple of taller options so the auto-fit doesn't always
+  // prefer wide-and-short layouts.
+  for (let rows = 1; rows <= 4; rows++) {
+    const cols = Math.ceil(count / rows);
+    if (cols <= maxCols) candidates.push({ cols, rows });
+  }
+
+  let best: Layout = { cols: 1, rows: count, tileW: 0, tileH: 0 };
+  for (const { cols, rows } of candidates) {
+    if (cols * rows < count) continue;
+    const availW = width - gap * (cols - 1);
+    const availH = height - gap * (rows - 1);
+    if (availW <= 0 || availH <= 0) continue;
+    const maxTileW = availW / cols;
+    const maxTileH = availH / rows;
+    // largest 16:9 tile that fits within (maxTileW, maxTileH)
+    const tileW = Math.floor(Math.min(maxTileW, maxTileH * TILE_ASPECT));
+    const tileH = Math.floor(tileW / TILE_ASPECT);
+    if (tileW > best.tileW) best = { cols, rows, tileW, tileH };
+  }
+  return best;
 }
 
-function sizeForCount(count: number): "sm" | "md" | "lg" {
-  if (count <= 1) return "lg";
-  if (count <= 4) return "md";
-  return "sm";
+function sizeForTileWidth(tileW: number): "xs" | "sm" | "md" | "lg" {
+  if (tileW < 180) return "xs";
+  if (tileW < 320) return "sm";
+  if (tileW < 560) return "md";
+  return "lg";
 }
 
-function useIsMobile() {
-  const [isMobile, setIsMobile] = useState(false);
+function useContainerSize(ref: React.RefObject<HTMLElement | null>) {
+  const [size, setSize] = useState({ width: 0, height: 0 });
   useEffect(() => {
-    const mq = window.matchMedia("(max-width: 767px)");
-    const apply = () => setIsMobile(mq.matches);
+    const el = ref.current;
+    if (!el) return;
+    const apply = () => setSize({ width: el.clientWidth, height: el.clientHeight });
     apply();
-    mq.addEventListener("change", apply);
-    return () => mq.removeEventListener("change", apply);
-  }, []);
-  return isMobile;
+    const ro = new ResizeObserver(apply);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ref]);
+  return size;
 }
