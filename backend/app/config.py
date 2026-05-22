@@ -13,6 +13,12 @@ class Settings(BaseSettings):
     )
     redis_url: str = ""
 
+    # Self-ping keeps free-tier hosts (Render, Fly, Railway) from
+    # auto-sleeping while the app is alive. Set to the app's public URL
+    # in production; leave empty to disable.
+    ping_url: str = ""
+    ping_interval_seconds: int = 600  # 10 min — Render sleeps after 15.
+
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False, extra="ignore")
 
     @property

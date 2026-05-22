@@ -1,0 +1,24 @@
+name: keep-warm
+
+on:
+  schedule:
+    # Every 10 minutes. GitHub Actions cron is best-effort — runs can be
+    # delayed or skipped under load, so the backend also self-pings while
+    # alive. This workflow only matters for the cold-start gap.
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping API health
+        run: |
+          for i in 1 2 3; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 60 https://video-meet-api.onrender.com/health || echo 000)
+            echo "attempt $i → HTTP $code"
+            if [ "$code" = "200" ]; then exit 0; fi
+            sleep 10
+          done
+          echo "::warning::All ping attempts failed"
+          exit 0  # never fail the workflow — we just want to wake the box
