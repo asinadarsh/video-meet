@@ -1,8 +1,17 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { Mic, MicOff, MonitorUp, Hand } from "lucide-react";
-import { avatarColor, initials } from "@/lib/utils";
+import { Mic, MicOff, MonitorUp, Hand, Pin, PinOff } from "lucide-react";
+import { avatarColor, initials, cn } from "@/lib/utils";
+
+type Size = "xs" | "sm" | "md" | "lg";
+
+const avatarSizeByTile: Record<Size, string> = {
+  xs: "size-10 text-sm",
+  sm: "size-14 text-base",
+  md: "size-20 text-2xl",
+  lg: "size-28 text-3xl",
+};
 
 export function VideoTile({
   stream,
@@ -13,6 +22,10 @@ export function VideoTile({
   raisedHand,
   isSelf,
   isHost,
+  pinned,
+  size = "md",
+  onTogglePin,
+  compact,
 }: {
   stream: MediaStream | null;
   name: string;
@@ -22,6 +35,10 @@ export function VideoTile({
   raisedHand?: boolean;
   isSelf?: boolean;
   isHost?: boolean;
+  pinned?: boolean;
+  size?: Size;
+  onTogglePin?: () => void;
+  compact?: boolean;
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
@@ -31,19 +48,38 @@ export function VideoTile({
     }
   }, [stream]);
 
+  // Screen-shared content needs to be visible in full — contain. Camera fills — cover.
+  const objectFit = screen ? "object-contain bg-black" : "object-cover";
+
   return (
-    <div className="relative rounded-xl overflow-hidden bg-[var(--surface-2)] aspect-video border border-[var(--border)] group">
+    <div
+      className={cn(
+        "relative w-full h-full rounded-xl overflow-hidden bg-[var(--surface-2)] border group",
+        pnnedBorder(pinned),
+        audio ? "" : "ring-0",
+      )}
+    >
       {stream && video ? (
         <video
           ref={videoRef}
           autoPlay
           playsInline
           muted={isSelf}
-          className={`w-full h-full object-cover ${isSelf && !screen ? "mirror" : ""}`}
+          className={cn(
+            "w-full h-full",
+            objectFit,
+            isSelf && !screen ? "mirror" : "",
+          )}
         />
       ) : (
         <div className="absolute inset-0 grid place-items-center">
-          <div className={`size-20 rounded-full grid place-items-center text-2xl font-semibold text-white ${avatarColor(name || "?")}`}>
+          <div
+            className={cn(
+              "rounded-full grid place-items-center font-semibold text-white",
+              avatarSizeByTile[size],
+              avatarColor(name || "?"),
+            )}
+          >
             {initials(name || "?")}
           </div>
         </div>
@@ -51,29 +87,62 @@ export function VideoTile({
 
       {/* Top-right indicators */}
       <div className="absolute top-2 right-2 flex items-center gap-1">
-        {screen && (
-          <span className="inline-flex items-center gap-1 bg-black/60 text-white text-xs px-2 py-1 rounded-md">
-            <MonitorUp className="size-3" /> Sharing
+        {!compact && screen && (
+          <span className="inline-flex items-center gap-1 bg-black/60 text-white text-[10px] sm:text-xs px-1.5 sm:px-2 py-0.5 sm:py-1 rounded-md">
+            <MonitorUp className="size-3" />
+            <span className="hidden sm:inline">Sharing</span>
           </span>
         )}
         {raisedHand && (
-          <span className="inline-flex items-center gap-1 bg-amber-500/90 text-white text-xs px-2 py-1 rounded-md">
+          <span className="inline-flex items-center gap-1 bg-amber-500/90 text-white text-xs px-1.5 py-0.5 rounded-md">
             <Hand className="size-3" />
+          </span>
+        )}
+        {pinned && !compact && (
+          <span className="inline-flex items-center gap-1 bg-[var(--primary)]/90 text-white text-[10px] sm:text-xs px-1.5 sm:px-2 py-0.5 sm:py-1 rounded-md">
+            <Pin className="size-3" />
           </span>
         )}
       </div>
 
-      {/* Bottom-left name + mute */}
-      <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between gap-2">
-        <div className="inline-flex items-center gap-1.5 bg-black/60 text-white text-xs px-2 py-1 rounded-md max-w-[70%]">
-          {audio ? <Mic className="size-3 shrink-0" /> : <MicOff className="size-3 shrink-0 text-red-400" />}
+      {/* Hover-only pin button */}
+      {onTogglePin && (
+        <button
+          onClick={onTogglePin}
+          className="absolute top-2 left-2 size-8 rounded-md bg-black/50 backdrop-blur-sm text-white opacity-0 group-hover:opacity-100 transition-opacity grid place-items-center hover:bg-black/70"
+          aria-label={pinned ? "Unpin" : "Pin"}
+          title={pinned ? "Unpin" : "Pin"}
+        >
+          {pinned ? <PinOff className="size-4" /> : <Pin className="size-4" />}
+        </button>
+      )}
+
+      {/* Bottom name + mute */}
+      <div className="absolute bottom-1.5 left-1.5 right-1.5 flex items-center justify-between gap-2 pointer-events-none">
+        <div
+          className={cn(
+            "inline-flex items-center gap-1.5 bg-black/60 text-white rounded-md max-w-[80%]",
+            compact ? "text-[10px] px-1.5 py-0.5" : "text-xs px-2 py-1",
+          )}
+        >
+          {audio ? (
+            <Mic className="size-3 shrink-0" />
+          ) : (
+            <MicOff className="size-3 shrink-0 text-red-400" />
+          )}
           <span className="truncate">
             {name}
             {isSelf ? " (You)" : ""}
-            {isHost ? " · Host" : ""}
+            {!compact && isHost ? " · Host" : ""}
           </span>
         </div>
       </div>
     </div>
   );
+}
+
+function pnnedBorder(pinned?: boolean) {
+  return pinned
+    ? "border-[var(--primary)] border-2"
+    : "border-[var(--border)]";
 }

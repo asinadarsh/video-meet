@@ -1,15 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { Copy, Info } from "lucide-react";
+import { Copy, Info, LayoutGrid, User } from "lucide-react";
 import { api } from "@/lib/api";
 import { storage } from "@/lib/storage";
 import type { ChatMessage, JoinResponse, Meeting, Participant } from "@/lib/types";
 
 import { PreJoin } from "@/components/meeting/PreJoin";
-import { VideoGrid } from "@/components/meeting/VideoGrid";
-import { VideoTile } from "@/components/meeting/VideoTile";
+import { VideoGrid, type TileData, type ViewMode } from "@/components/meeting/VideoGrid";
 import { Controls } from "@/components/meeting/Controls";
 import { ChatPanel } from "@/components/meeting/ChatPanel";
 import {
@@ -20,8 +19,6 @@ import { useSocket } from "@/hooks/useSocket";
 import { useWebRTC, type RemotePeer } from "@/hooks/useWebRTC";
 
 type Stage = "loading" | "prejoin" | "joining" | "in-meeting" | "left" | "error";
-
-type PendingOffer = { participant_id: string; name: string };
 
 export default function MeetingRoomPage() {
   const params = useParams<{ id: string }>();
@@ -49,6 +46,10 @@ export default function MeetingRoomPage() {
 
   const [chatOpen, setChatOpen] = useState(false);
   const [peopleOpen, setPeopleOpen] = useState(false);
+
+  const [viewMode, setViewMode] = useState<ViewMode>("gallery");
+  const [pinnedId, setPinnedId] = useState<string | null>(null);
+  const [userOverrodeView, setUserOverrodeView] = useState(false);
 
   const selfId = joinInfo?.participant_id ?? null;
   const isHost = !!joinInfo?.is_host;
@@ -380,32 +381,57 @@ export default function MeetingRoomPage() {
 
   // in-meeting
   const peersArr: RemotePeer[] = Array.from(rtc.peers.values());
-  const allTilesCount = 1 + peersArr.length;
 
-  const rows: ParticipantRow[] = [
+  const selfName = storage.getName() || "You";
+
+  const tiles: TileData[] = [
     {
-      participant_id: selfId!,
-      name: joinInfo?.meeting.host_name && isHost
-        ? storage.getName() || "You"
-        : storage.getName() || "You",
-      is_host: isHost,
-      isSelf: true,
+      id: selfId!,
+      stream: localStream,
+      name: selfName,
       audio: audioOn,
       video: videoOn,
       screen: screenOn,
       raisedHand: handRaised,
+      isSelf: true,
+      isHost,
     },
-    ...peersArr.map<ParticipantRow>((p) => ({
-      participant_id: p.participant_id,
+    ...peersArr.map<TileData>((p) => ({
+      id: p.participant_id,
+      stream: p.stream,
       name: p.name,
-      is_host: participants.find((x) => x.participant_id === p.participant_id)?.is_host || false,
-      isSelf: false,
       audio: p.audio,
       video: p.video,
       screen: p.screen,
       raisedHand: p.raisedHand,
+      isHost: participants.find((x) => x.participant_id === p.participant_id)?.is_host || false,
     })),
   ];
+
+  const rows: ParticipantRow[] = tiles.map<ParticipantRow>((t) => ({
+    participant_id: t.id,
+    name: t.name,
+    is_host: !!t.isHost,
+    isSelf: !!t.isSelf,
+    audio: t.audio,
+    video: t.video,
+    screen: t.screen,
+    raisedHand: t.raisedHand,
+  }));
+
+  // Spotlight resolution: explicit pin → whoever is screen-sharing → first peer
+  const screenSharer = tiles.find((t) => t.screen);
+  const spotlightId = pinnedId ?? screenSharer?.id ?? null;
+
+  // Auto-switch to speaker view when someone starts screen-sharing
+  // (unless the user has manually picked a view)
+  const effectiveMode: ViewMode =
+    userOverrodeView ? viewMode : screenSharer ? "speaker" : viewMode;
+
+  const togglePin = (id: string) => {
+    setPinnedId((cur) => (cur === id ? null : id));
+    if (!userOverrodeView) setUserOverrodeView(true);
+  };
 
   const sideOpen = chatOpen || peopleOpen;
 
@@ -431,6 +457,29 @@ export default function MeetingRoomPage() {
           >
             {socketState === "open" ? "Connected" : socketState}
           </span>
+
+          {/* Layout toggle */}
+          <div className="hidden sm:flex items-center bg-[var(--surface-2)] border border-[var(--border)] rounded-md p-0.5">
+            <button
+              onClick={() => { setViewMode("gallery"); setUserOverrodeView(true); }}
+              className={`inline-flex items-center gap-1.5 px-2 h-7 rounded text-xs ${
+                effectiveMode === "gallery" ? "bg-[var(--surface)] text-white" : "text-[var(--muted)] hover:text-white"
+              }`}
+              title="Gallery view"
+            >
+              <LayoutGrid className="size-3.5" /> Gallery
+            </button>
+            <button
+              onClick={() => { setViewMode("speaker"); setUserOverrodeView(true); }}
+              className={`inline-flex items-center gap-1.5 px-2 h-7 rounded text-xs ${
+                effectiveMode === "speaker" ? "bg-[var(--surface)] text-white" : "text-[var(--muted)] hover:text-white"
+              }`}
+              title="Speaker view"
+            >
+              <User className="size-3.5" /> Speaker
+            </button>
+          </div>
+
           <button
             onClick={copyInvite}
             className="inline-flex items-center gap-1.5 px-3 h-8 rounded-md text-xs border border-[var(--border)] hover:bg-[var(--surface-2)]"
@@ -441,31 +490,14 @@ export default function MeetingRoomPage() {
       </header>
 
       <div className="flex-1 flex overflow-hidden">
-        <main className="flex-1 p-3 sm:p-4 overflow-auto relative">
-          <VideoGrid count={allTilesCount}>
-            <VideoTile
-              stream={localStream}
-              name={storage.getName() || "You"}
-              audio={audioOn}
-              video={videoOn}
-              screen={screenOn}
-              raisedHand={handRaised}
-              isSelf
-              isHost={isHost}
-            />
-            {peersArr.map((p) => (
-              <VideoTile
-                key={p.participant_id}
-                stream={p.stream}
-                name={p.name}
-                audio={p.audio}
-                video={p.video}
-                screen={p.screen}
-                raisedHand={p.raisedHand}
-                isHost={participants.find((x) => x.participant_id === p.participant_id)?.is_host}
-              />
-            ))}
-          </VideoGrid>
+        <main className="flex-1 p-3 sm:p-4 overflow-hidden relative">
+          <VideoGrid
+            mode={effectiveMode}
+            tiles={tiles}
+            spotlightId={spotlightId}
+            pinnedId={pinnedId}
+            onTogglePin={togglePin}
+          />
 
           {/* floating reactions */}
           <div className="pointer-events-none absolute inset-0 overflow-hidden">
