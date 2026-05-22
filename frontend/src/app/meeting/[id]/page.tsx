@@ -213,8 +213,16 @@ export default function MeetingRoomPage() {
       setVideoOn(video);
 
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
-        video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+        video: {
+          width: { ideal: 1280, max: 1920 },
+          height: { ideal: 720, max: 1080 },
+          frameRate: { ideal: 30, max: 30 },
+        },
       });
       stream.getAudioTracks().forEach((t) => (t.enabled = audio));
       stream.getVideoTracks().forEach((t) => (t.enabled = video));

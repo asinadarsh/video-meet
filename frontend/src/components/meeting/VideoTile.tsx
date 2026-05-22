@@ -42,37 +42,55 @@ export function VideoTile({
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
+  // Keep <video> ALWAYS mounted so toggling the camera off/on doesn't
+  // tear down the element's stream binding. We hide it with opacity
+  // when the camera is off and overlay the avatar.
   useEffect(() => {
-    if (videoRef.current && stream && videoRef.current.srcObject !== stream) {
-      videoRef.current.srcObject = stream;
+    const el = videoRef.current;
+    if (!el) return;
+    if (stream && el.srcObject !== stream) {
+      el.srcObject = stream;
+      // Safari sometimes needs an explicit play kick after srcObject swap.
+      el.play().catch(() => {});
     }
   }, [stream]);
 
-  // Screen-shared content needs to be visible in full — contain. Camera fills — cover.
+  // When the camera turns back on after being off, make sure the element
+  // resumes playback (some browsers pause when no frames arrive for a bit).
+  useEffect(() => {
+    const el = videoRef.current;
+    if (!el) return;
+    if (video) el.play().catch(() => {});
+  }, [video]);
+
+  // Screen-shared content needs to be visible in full — contain.
+  // Camera fills — cover.
   const objectFit = screen ? "object-contain bg-black" : "object-cover";
+  const showVideo = !!stream && video;
 
   return (
     <div
       className={cn(
         "relative w-full h-full rounded-xl overflow-hidden bg-[var(--surface-2)] border group",
-        pnnedBorder(pinned),
-        audio ? "" : "ring-0",
+        pinned ? "border-[var(--primary)] border-2" : "border-[var(--border)]",
       )}
     >
-      {stream && video ? (
-        <video
-          ref={videoRef}
-          autoPlay
-          playsInline
-          muted={isSelf}
-          className={cn(
-            "w-full h-full",
-            objectFit,
-            isSelf && !screen ? "mirror" : "",
-          )}
-        />
-      ) : (
-        <div className="absolute inset-0 grid place-items-center">
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        muted={isSelf}
+        className={cn(
+          "w-full h-full",
+          objectFit,
+          isSelf && !screen ? "mirror" : "",
+          showVideo ? "opacity-100" : "opacity-0",
+          "transition-opacity duration-150",
+        )}
+      />
+
+      {!showVideo && (
+        <div className="absolute inset-0 grid place-items-center bg-[var(--surface-2)]">
           <div
             className={cn(
               "rounded-full grid place-items-center font-semibold text-white",
@@ -139,10 +157,4 @@ export function VideoTile({
       </div>
     </div>
   );
-}
-
-function pnnedBorder(pinned?: boolean) {
-  return pinned
-    ? "border-[var(--primary)] border-2"
-    : "border-[var(--border)]";
 }

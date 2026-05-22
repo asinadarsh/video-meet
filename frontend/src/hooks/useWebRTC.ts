@@ -42,6 +42,30 @@ const ICE_SERVERS: RTCIceServer[] = [
   { urls: "stun:stun1.l.google.com:19302" },
 ];
 
+// Per-peer video bitrate ceiling. WebRTC's default starts low and ramps
+// slowly — explicit caps make the encoder commit to a higher resolution.
+const MAX_VIDEO_BITRATE = 2_500_000; // 2.5 Mbps
+const MAX_VIDEO_FRAMERATE = 30;
+
+async function tunePeerVideoQuality(pc: RTCPeerConnection) {
+  for (const sender of pc.getSenders()) {
+    if (sender.track?.kind !== "video") continue;
+    try {
+      const params = sender.getParameters();
+      if (!params.encodings || params.encodings.length === 0) {
+        params.encodings = [{}];
+      }
+      params.encodings[0].maxBitrate = MAX_VIDEO_BITRATE;
+      params.encodings[0].maxFramerate = MAX_VIDEO_FRAMERATE;
+      // degrade resolution last, prefer keeping it crisp at lower fps
+      params.degradationPreference = "maintain-resolution";
+      await sender.setParameters(params);
+    } catch (e) {
+      console.warn("setParameters failed", e);
+    }
+  }
+}
+
 export function useWebRTC({ selfId, localStream, sendSignal }: Args) {
   const pcs = useRef<Map<string, RTCPeerConnection>>(new Map());
   const [peers, setPeers] = useState<Map<string, RemotePeer>>(new Map());
@@ -104,7 +128,11 @@ export function useWebRTC({ selfId, localStream, sendSignal }: Args) {
       };
 
       pc.onconnectionstatechange = () => {
-        if (pc!.connectionState === "failed" || pc!.connectionState === "closed") {
+        const state = pc!.connectionState;
+        if (state === "connected") {
+          // Now that SDP is negotiated, push our quality preferences.
+          tunePeerVideoQuality(pc!);
+        } else if (state === "failed" || state === "closed") {
           closePeer(id);
         }
       };
