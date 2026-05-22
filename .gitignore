@@ -1,0 +1,29 @@
+# Python
+backend/.venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/*.pyc
+backend/*.sqlite
+backend/*.sqlite3
+backend/*.db
+backend/.uvicorn.*.log
+backend/.ws-smoke.py
+
+# Env
+**/.env
+**/.env.local
+!**/.env.example
+!**/.env.local.example
+
+# Node / Next.js
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.next-dev.*.log
+frontend/.vercel/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
